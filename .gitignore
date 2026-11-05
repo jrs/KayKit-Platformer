@@ -36,6 +36,21 @@
 
 # Visual Studio cache directory
 .vs/
+.vscode/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
 
 # Gradle cache directory
 .gradle/
@@ -107,3 +122,11 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local Synty packs (licensed; not for GitHub)
+Assets/KayKit/
+Assets/KayKit.meta
