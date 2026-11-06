@@ -1,14 +1,21 @@
+using System.Collections;
 using UnityEngine;
 
-[RequireComponent(typeof(CharacterController))]
+[RequireComponent(typeof(Rigidbody))]
 public class PlayerMovement : MonoBehaviour
 {
     [Header("Movement Settings")]
-    public float walkSpeed = 3.5f;
-    public float runSpeed = 7.0f;
-    public float rotationSpeed = 10f;
-    public float jumpHeight = 1.5f;
-    public float gravity = -19.62f; // -19.62f feels snappier/more arcadey than -9.81f
+    public float moveSpeed = 12f;
+    public float rotationSpeed = 20f;
+    public float jumpForce = 12f;
+    
+    [Tooltip("Multiplier for physics gravity. Values between 2.0 and 3.5 feel snappy and arcade-like.")]
+    public float gravityScale = 2.5f;
+
+    [Header("Ground Detection")]
+    public Transform groundCheck;
+    public float groundDistance = 0.3f;
+    public LayerMask groundMask;
 
     [Header("References")]
     public Transform cameraTransform;
@@ -17,34 +24,31 @@ public class PlayerMovement : MonoBehaviour
     [Header("Animator Parameter Names")]
     public string speedFloatParam = "Speed";
     public string isMovingBoolParam = "isMoving";
-    public string isRunningBoolParam = "isRunning";
     public string isGroundedBoolParam = "isGrounded";
     public string jumpTriggerParam = "Jump";
 
-    private CharacterController controller;
-    private Vector3 playerVelocity;
+    private Rigidbody rb;
+    private InputSystem_Actions inputActions;
     private bool isGrounded;
     private bool canMove = true;
 
-    private InputSystem_Actions inputActions;
-
-    // Animator Hash IDs
+    // Animator Hashes
     private int speedHash;
     private int isMovingHash;
-    private int isRunningHash;
     private int isGroundedHash;
     private int jumpTriggerHash;
 
     private void Awake()
     {
-        controller = GetComponent<CharacterController>();
+        rb = GetComponent<Rigidbody>();
+        rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
+
         inputActions = new InputSystem_Actions();
 
         if (animator != null)
         {
             speedHash = Animator.StringToHash(speedFloatParam);
             isMovingHash = Animator.StringToHash(isMovingBoolParam);
-            isRunningHash = Animator.StringToHash(isRunningBoolParam);
             isGroundedHash = Animator.StringToHash(isGroundedBoolParam);
             jumpTriggerHash = Animator.StringToHash(jumpTriggerParam);
         }
@@ -55,7 +59,6 @@ public class PlayerMovement : MonoBehaviour
 
     void Start()
     {
-        // Lock the cursor to the center of the game screen and hide it
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible = false;
 
@@ -67,48 +70,42 @@ public class PlayerMovement : MonoBehaviour
 
     void Update()
     {
-        // 1. Ground check & velocity reset
-        isGrounded = controller.isGrounded;
-        if (isGrounded && playerVelocity.y < 0)
+        // 1. Ground check
+        if (groundCheck != null)
         {
-            playerVelocity.y = -0.5f;
+            isGrounded = Physics.CheckSphere(groundCheck.position, groundDistance, groundMask);
         }
 
-        // 2. Read Inputs
-        Vector2 inputVector = Vector2.zero;
-        bool isRunPressed = false;
-        bool jumpTriggered = false;
+        // 2. Read Jump input
+        if (canMove && inputActions.Player.Jump.triggered && isGrounded)
+        {
+            Jump();
+        }
 
+        // 3. Update Animator
+        UpdateAnimator();
+    }
+
+    void FixedUpdate()
+    {
         if (canMove)
         {
-            inputVector = inputActions.Player.Move.ReadValue<Vector2>();
-            isRunPressed = inputActions.Player.Sprint.IsPressed();
-            jumpTriggered = inputActions.Player.Jump.triggered;
+            MovePlayer();
         }
 
-        // 3. Jump Logic
-        if (jumpTriggered && isGrounded)
-        {
-            // Physics formula to calculate initial jump velocity: v = sqrt(height * -2 * gravity)
-            playerVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
+        ApplyCustomGravity();
+    }
 
-            if (animator != null)
-            {
-                animator.SetTrigger(jumpTriggerHash);
-            }
-        }
+    private void MovePlayer()
+    {
+        Vector2 inputVector = inputActions.Player.Move.ReadValue<Vector2>();
 
-        // 4. Horizontal Movement Logic
         Vector3 inputDirection = new Vector3(inputVector.x, 0f, inputVector.y);
-        bool isMoving = canMove && (inputDirection.magnitude >= 0.1f);
-        float currentSpeed = 0f;
-        bool isRunning = false;
+        bool isMoving = inputDirection.magnitude >= 0.1f;
 
         if (isMoving)
         {
-            isRunning = isRunPressed;
-            currentSpeed = isRunning ? runSpeed : walkSpeed;
-
+            // Camera-relative calculations
             Vector3 camForward = cameraTransform.forward;
             Vector3 camRight = cameraTransform.right;
             camForward.y = 0f;
@@ -118,28 +115,67 @@ public class PlayerMovement : MonoBehaviour
 
             Vector3 moveDirection = (camForward * inputDirection.z) + (camRight * inputDirection.x);
 
-            controller.Move(moveDirection * currentSpeed * Time.deltaTime);
+            // Directly set velocity to single move speed (Run)
+            Vector3 targetVelocity = moveDirection * moveSpeed;
+            rb.linearVelocity = new Vector3(targetVelocity.x, rb.linearVelocity.y, targetVelocity.z);
 
+            // Smooth rotation
             Quaternion targetRotation = Quaternion.LookRotation(moveDirection);
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.fixedDeltaTime);
         }
-
-        // 5. Update Animator Parameters
-        UpdateAnimator(isMoving, isRunning, currentSpeed);
-
-        // 6. Apply Gravity & Vertical Movement
-        playerVelocity.y += gravity * Time.deltaTime;
-        controller.Move(playerVelocity * Time.deltaTime);
+        else
+        {
+            // Stop horizontal momentum instantly when no input is given
+            rb.linearVelocity = new Vector3(0f, rb.linearVelocity.y, 0f);
+        }
     }
 
-    private void UpdateAnimator(bool isMoving, bool isRunning, float currentSpeed)
+    private void ApplyCustomGravity()
+    {
+        if (gravityScale != 1f)
+        {
+            Vector3 extraGravity = Physics.gravity * (gravityScale - 1f);
+            rb.AddForce(extraGravity, ForceMode.Acceleration);
+        }
+    }
+
+    private void Jump()
+    {
+        rb.linearVelocity = new Vector3(rb.linearVelocity.x, 0f, rb.linearVelocity.z);
+        rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
+
+        if (animator != null)
+        {
+            animator.SetTrigger(jumpTriggerHash);
+        }
+    }
+
+    private void UpdateAnimator()
     {
         if (animator == null) return;
 
+        Vector2 inputVector = canMove ? inputActions.Player.Move.ReadValue<Vector2>() : Vector2.zero;
+        bool isMoving = canMove && (inputVector.magnitude >= 0.1f);
+
+        Vector3 horizontalVelocity = new Vector3(rb.linearVelocity.x, 0f, rb.linearVelocity.z);
+        float currentSpeed = isMoving ? horizontalVelocity.magnitude : 0f;
+
         animator.SetBool(isMovingHash, isMoving);
-        animator.SetBool(isRunningHash, isRunning);
         animator.SetBool(isGroundedHash, isGrounded);
         animator.SetFloat(speedHash, currentSpeed, 0.1f, Time.deltaTime);
+    }
+
+    public void ApplyKnockback(Vector3 impulseForce, float stunDuration)
+    {
+        rb.AddForce(impulseForce, ForceMode.Impulse);
+        StartCoroutine(StunRoutine(stunDuration));
+    }
+
+    private IEnumerator StunRoutine(float duration)
+    {
+        canMove = false;
+        yield return new WaitForSeconds(duration);
+        canMove = true;
     }
 
     public void SetCanMove(bool state)
